@@ -18,3 +18,11 @@
 ```bash
 pip install -r requirements.txt
 python src/main.py
+
+## 환경변수 예시
+SIREN_SMTP_HOST=smtp.gmail.com
+SIREN_SMTP_PORT=587
+SIREN_SMTP_USER=your_account@gmail.com
+SIREN_SMTP_PASS=your_app_password
+SIREN_FROM=your_account@gmail.com
+SIREN_TO=receiver@example.com
