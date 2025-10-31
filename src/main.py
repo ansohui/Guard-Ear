@@ -1,44 +1,82 @@
-from frame_buffer.frame_buffer import FrameBuffer
-from preprocessor.input_formatting import to_16khz_mono
-from preprocessor.rule_prefilter import rule_based_prefilter
-from detection.yamnet_wrapper import YamNetDetector
-from detection.mlp_head import MLPHead
-from postprocessor.hysteresis_rules import Hysteresis
-from server.api import send_event
+"""
+src/main.py
 
+Frame Buffer 
+→ Preprocessor (input_formatting + rule_prefilter)
+→ Detection (YAMNet + MLP Head fallback)
+→ Postprocessor (Hysteresis)
+→ Server (notification) 훅만 호출
+"""
+
+import os
+import soundfile as sf
+import numpy as np
+
+from src.preprocessor import rule_prefilter as rp
+from src.detection.yamnet_wrapper import YamNetWrapper
+from src.detection.mlp_head import MLPHead
+from src.postprocessor.hysteresis_rules import HysteresisDetector
+
+
+# === 1. 입력 포맷터 ===
+def _load_and_format(path: str) -> np.ndarray:
+    """16kHz mono + RMS 정규화"""
+    y, sr = sf.read(path, dtype="float32", always_2d=False)
+    if y.ndim > 1:
+        y = y.mean(axis=1)
+    if sr != 16000:
+        raise ValueError(f"expected 16kHz, got {sr}")
+    rms = np.sqrt(np.mean(y ** 2)) + 1e-12
+    y = y / max(rms, 1e-4)
+    return y.astype("float32")
+
+
+# === 2. 메인 함수 ===
 def main():
-    # 1) 버퍼 준비
-    buffer = FrameBuffer(window_sec=0.96, hop_sec=0.48, sample_rate=16000)
+    audio_path = "./dataset.wav"   # 데모용
 
-    # 2) 모델 준비
-    yamnet = YamNetDetector()
-    mlp = MLPHead(input_dim=521, hidden_dim=128, num_classes=1)  # siren prob
-    post = Hysteresis(enter_th=0.7, exit_th=0.3, hold_frames=3)
+    # 1) 입력
+    y = _load_and_format(audio_path)
 
-    # 외부에서 오디오 프레임이 들어온다고 가정
-    for audio_chunk in buffer.stream_from_mic():   # generator
-        # (a) 16kHz mono 맞추기
-        wav16 = to_16khz_mono(audio_chunk, target_sr=16000)
+    # 2) rule 프리필터
+    p_rule = rp.rule_prefilter(y)
 
-        # (b) 룰 프리필터
-        passed = rule_based_prefilter(wav16, sr=16000)
-        if not passed:
-            post.update(False)
-            continue
+    # 3) detection
+    yam = YamNetWrapper("./yamnet_class_map.csv")
+    frame_scores, embeddings = yam.infer(y)
 
-        # (c) YamNet → 521D prob
-        yamnet_probs = yamnet.predict(wav16, sr=16000)
+    
+    use_head = os.path.exists("weights/W1.npy")
+    if use_head:
+        head = MLPHead("weights")
+        p_ml = head(frame_scores)   
+    else:
+        p_ml = yam.siren_fallback_score(frame_scores)
 
-        # (d) MLP head → siren prob
-        siren_prob = mlp.predict(yamnet_probs)
+    # 4) 점수 fuse
+    ALPHA = 0.6
+    p_fused = ALPHA * p_ml + (1 - ALPHA) * p_rule
 
-        # (e) 후처리 (히스테리시스 + 룰)
-        is_siren = post.update(siren_prob > 0.5)
+    # 5) 히스테리시스 
+    hyster = HysteresisDetector()
+    alerts = []
+    for _ in range(10):
+        alert = hyster.update(p_fused)
+        alerts.append(alert)
 
-        # (f) 서버 알림
-        if is_siren:
-            send_event({"type": "siren_detected", "prob": float(siren_prob)})
-            print("[INFO] siren detected!")
+    final_alert = any(alerts)
 
+    # 6) 결과 출력 
+    print({
+        "file": os.path.basename(audio_path),
+        "p_rule": round(p_rule, 3),
+        "p_ml": round(p_ml, 3),
+        "p_fused": round(p_fused, 3),
+        "alert": bool(final_alert),
+        "last_state": hyster.state,
+    })
+
+
+# === 3. 실행 엔트리 ===
 if __name__ == "__main__":
     main()
