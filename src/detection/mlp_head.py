@@ -1,22 +1,16 @@
 import numpy as np
+import os
 
 class MLPHead:
-    def __init__(self, input_dim=521, hidden_dim=128, num_classes=1):
-
-        rng = np.random.default_rng(0)
-        self.W1 = rng.standard_normal((input_dim, hidden_dim)) * 0.01
-        self.b1 = np.zeros(hidden_dim)
-        self.W2 = rng.standard_normal((hidden_dim, num_classes)) * 0.01
-        self.b2 = np.zeros(num_classes)
+    def __init__(self, input_dim=521, hidden_dim=128, num_classes=1, weight_dir="weights"):
+        self.W1 = np.load(os.path.join(weight_dir, "W1.npy"))
+        self.b1 = np.load(os.path.join(weight_dir, "b1.npy"))
+        self.W2 = np.load(os.path.join(weight_dir, "W2.npy"))
+        self.b2 = np.load(os.path.join(weight_dir, "b2.npy"))
 
     def predict(self, x):
-        """
-        x: (521,) yamnet prob
-        return: scalar siren prob (0~1)
-        """
         h = x @ self.W1 + self.b1
-        h = np.maximum(h, 0)  # ReLU
+        h = np.maximum(h, 0)
         out = h @ self.W2 + self.b2
-        # sigmoid
         prob = 1 / (1 + np.exp(-out))
         return float(prob.squeeze())
